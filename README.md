@@ -26,7 +26,7 @@ You can now use the function from any path in this PowerShell session.
 
 Note that the function will be unloaded once you close the PowerShell window, and will need to be reloaded next time you open a new session.
 
-**Tip:** Use the `man` command to see it's manual page.  You can use the `-Examples` or even the `-Full` switch to see more details
+**Tip:** Use the `man` command to see its manual page.  You can use the `-Examples` or even the `-Full` switch to see more details
 
 ![image of function's manual page in PS](https://user-images.githubusercontent.com/71462840/137845366-ad8bda4d-537d-4fa3-ae1a-8e1d120d3547.png)
 
@@ -47,7 +47,7 @@ Sync the folders like so...
 
 An option when using the `-Source`/`-Destination` parameter pair, there are three `-SyncType` arguments available.
 - **Update** - *This function's default sync behavior.*  It will only copy over new files and update files which are newer in your source path.  It will not remove files or replace files which are newer in your destination path.  In case of conflicts, it will open the GUI.
-- **Mirror** - Forces destination to match source.  In other words, it replaces existing files irregardless of whether they are newer or not and erases those from the destination path that do not exist in the source path.
+- **Mirror** - Forces destination to match source.  In other words, it replaces existing files regardless of whether they are newer or not and erases those from the destination path that do not exist in the source path.
 - **TwoWay** - Similarly to Mirror in that both sides match at the end, but instead of Source files having priority, the priority is decided for each file based on its last update time and size.  In case of conflicts, it will open the GUI.  I recommend viewing their [TwoWay tutorial video on youtube](https://www.youtube.com/watch?v=2hoShXeEDdQ&t=184s) and/or run tests first to familiarize yourself with this method.
 
 
