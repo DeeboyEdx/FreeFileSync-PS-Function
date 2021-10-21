@@ -76,7 +76,7 @@ function Free-File-Sync {
         [string]   $Source,
         [Parameter(Mandatory = $true, ParameterSetName = 'BuildAJob', Position = 1)]
         [string[]] $Destination,
-        [Parameter(Mandatory = $false, ParameterSetName = 'BatchJob')]
+        [Parameter(Mandatory = $false, ParameterSetName = 'BuildAJob')]
         [ValidateSet('TwoWay', 'Mirror', 'Update')] # Haven't implemented 'Custom' formatting yet.
         [string]  $SyncType = "Update",
 
@@ -96,23 +96,48 @@ function Free-File-Sync {
         switch ($PSCmdlet.ParameterSetName) {
             'BatchJob' 
             {
+                # Using pre-made job batch file.
                 Write-Verbose ("Recieved JobsPath: " + $JobsPath)
                 Write-Verbose ("Recieved $($Filter.Count) Filter$(if ($Filter.Count -ne 1) {"s"}): " + ($Filter -join ', '))
 
-                if ($JobsPath.EndsWith(".ffs_batch") -and $Filter -eq "*.ffs_batch") {
-                    $Filter = $JobsPath
-                    $JobsPath = ".\"
-                    Write-Verbose "Swapped `$JobPath and `$Filter"
+                # if not array, turn into array @()
+                if (-not ($Filter -is [array])) {
+                    $Filter = @($Filter)
+                }
+
+                # if $Filter is default value (Ie. it was unused) AND a batch file name was provided in $JobsPath
+                if ($Filter -eq @("*.ffs_batch") -and $JobsPath.EndsWith(".ffs_batch")) {
+                    $Filter = @(Split-Path $JobsPath -Leaf)
+                    if (-not ($JobsPath = Split-Path $JobsPath)) {
+                        $JobsPath = '.'
+                    }
+                    Write-Verbose "Distributed `$JobPath into `$JobPath '$JobsPath' and `$Filter '$($Filter -join ', ')"
                 }
 
                 $JobsPathS = [System.Collections.ArrayList]@()
-                for ($i=0; $i -lt $Filter.Count; $i++) {
-                    $Pattern = $Filter[$i]
-                    if ($Pattern -notmatch '\.ffs_batch'){
-                        $Pattern = "$Pattern.ffs_batch"
+                
+                # Validate paths, either full path in $Filter or combination of $JobsPath and $Filter
+                foreach ($path in $Filter) {
+                    $full_path = 
+                    if ([System.IO.Path]::IsPathRooted($path)) {
+                        # full path (might or might not have file name)
+                        $path
                     }
-                    Write-Verbose ("Adding job task: " + $Pattern)
-                    $full_path = Join-Path $JobsPath $Pattern
+                    else {
+                        # partial path or file name
+
+                        # add extension if not there
+                        if ($path -notmatch '\.ffs_batch$'){
+                            $path = "$path.ffs_batch"
+                        }
+                        Join-Path $JobsPath $path
+                    }
+
+                    if (-not (Test-Path $full_path)) {
+                        Write-Warning "File does not exist.  '$full_path'"
+                        Continue
+                    }
+                    Write-Verbose ("Adding job task: " + (Split-Path $full_path -Leaf))
                     $JobsPathS.add($full_path) | Out-Null
                 }
             }
@@ -168,7 +193,7 @@ function Free-File-Sync {
                         <PostSyncAction>None</PostSyncAction>
                     </Batch>
                 </FreeFileSync>'
-                $filenameS = [System.Collections.ArrayList]@()
+                $jobFileNameS = [System.Collections.ArrayList]@()
                 foreach ($d in $Destination | Where-Object {$_ -ne $Source } | Select-Object -Unique) {
                     $xml_string = $xml_template -f $SyncType, $Source, $d
                     $xml = [xml]$xml_string
@@ -176,13 +201,13 @@ function Free-File-Sync {
                     $full_save_file_name = Join-Path $env:TEMP $save_file_name
                     $xml.Save($full_save_file_name)
                     Write-Verbose ("Created job file: " + $full_save_file_name)
-                    $filenameS.Add($save_file_name) | Out-Null
+                    $jobFileNameS.Add($save_file_name) | Out-Null
                     if (-not (Test-Path $full_save_file_name)) {
                         Write-Host "Error: Job file did not create successfully." -ForegroundColor Red
                     }
                 }
                 Write-Verbose "Function recursively calling itself."
-                Free-File-Sync -JobsPath $env:TEMP -Filter $filenameS -SyncType $SyncType -ShowLogs:$ShowLogs -Verbose:$VerbosePreference
+                Free-File-Sync -JobsPath $env:TEMP -Filter $jobFileNameS -ShowLogs:$ShowLogs -Verbose:$VerbosePreference
             }
         }
     }
@@ -191,6 +216,12 @@ function Free-File-Sync {
         if ($PSCmdlet.ParameterSetName -eq 'BuildAJob') {
             return
         }
+        
+        if (-not $JobsPathS) {
+            Write-Host "No valid paths recieved." -ForegroundColor Red
+            return
+        }
+
         Write-Verbose "Doing... `"Get-ChildItem $JobsPathS -ErrorAction Stop | Select-Object -ExpandProperty FullName -Unique`""
 
         $JobFiles = try {
@@ -198,68 +229,80 @@ function Free-File-Sync {
         } catch {
             $null
         }
-        if (-not ($JobFiles -and $JobsPathS)) {
+        if ($PSCmdlet.ParameterSetName -eq 'BatchJob' -and -not $JobFiles) {
             Write-Host "No jobs found.  Exiting." -ForegroundColor Red
             return
         }
+        elseif ($JobFiles.Count -gt 5) {
+            Write-Warning "Beware an unexpectedly large number of job files ($($JobFiles.Count)) were found."
+            foreach ($Name in $JobFiles) {
+                Write-Host $Name.split("\")[-1] -ForegroundColor DarkGray
+            }
+            Write-Host "Sync jobs will continue in 10 seconds..." #-ForegroundColor DarkGray
+            Start-Sleep 11
+            Write-Host
+        }
 
-        $jobs = [System.Collections.ArrayList]@()
+        $sync_Jobs = [System.Collections.ArrayList]@()
         foreach ($filename in $JobFiles) {
             Write-Verbose ("Found job file: " + (Split-Path $filename -Leaf).split(".")[0])
             [xml]$xml = Get-Content $filename #-ErrorAction Stop
             $job = @{
                 Name     = (Split-Path $filename -Leaf).split(".")[0];
                 jobPath  = $filename;
-                From     = $xml.FreeFileSync.FolderPairs.Pair.Left;
-                To       = $xml.FreeFileSync.FolderPairs.Pair.Right;
+                From     = $xml.FreeFileSync.FolderPairs.Pair.Left -join ', ';
+                To       = $xml.FreeFileSync.FolderPairs.Pair.Right -join ', ';
                 Tries    = 0;
                 Complete = $false
             }
-            $jobs.Add($job) | Out-Null
+            $sync_Jobs.Add($job) | Out-Null
         }
 
         $i = 1
-        foreach ($job in $jobs) {
-            Write-Host "Processing Job $i : " $job.Name -ForegroundColor Cyan
+        foreach ($job in $sync_Jobs) {
+            Write-Host "Processing Job $(($i++)) : " $job.Name -ForegroundColor Cyan
             Write-Host "Syncing from : " $job.From
             Write-Host "To           : " $job.To
             if (-not (Test-Path $job.From)) {
-                Write-Host "Source path does not exist." -F Red
+                Write-Host "Source path does not exist.`n" -F Red
                 Continue
             }
-            $shouldProcess = "$($job.From) -> $($job.To)"
+            $should_process_message = "$($job.From) -> $($job.To)"
             if ($SyncType -eq 'TwoWay') {
-                $shouldProcess = $shouldProcess.Replace("->", "<->")
+                $should_process_message = $should_process_message.Replace("->", "<->")
             }
-            if ($PSCmdlet.ShouldProcess($shouldProcess,"$SyncType Sync")) {
-                $process = Start-Process $ffs -ArgumentList "`"$($job.jobPath)`"" -Wait -PassThru
+            if ($PSCmdlet.ShouldProcess($should_process_message,"$SyncType Sync")) {
+                $_process = Start-Process $ffs -ArgumentList "`"$($job.jobPath)`"" -Wait -PassThru
+            }
+            else {
+                Write-Host
+                Continue
             }
 
-            $msgColor = "Yellow"
-            $msg = switch ($process.ExitCode) {
-                0 { "Sync completed successfully"; $msgColor = "Green" }
+            $message_color = "Yellow"
+            $completion_message = switch ($_process.ExitCode) {
+                0 { "Sync completed successfully"; $message_color = "Green" }
                 1 { "Synchronization completed with warnings" }
                 2 { "Synchronization completed with errors" }
                 3 { "Synchronization was aborted" }
-                default { "Unknown exit code '$($process.ExitCode)'"; $msgColor = "Red" }
+                default { "Unknown exit code '$($_process.ExitCode)'"; $message_color = "Red" }
             }
-            Write-Host $msg -ForegroundColor $msgColor
+            Write-Host $completion_message -ForegroundColor $message_color
 
             $logFilePath = Join-Path $logPath "$($job.Name)*.html"
             $logFile = Get-ChildItem $logFilePath -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($logFile -and ($process.ExitCode -or $ShowLogs)) {
+            if ($logFile -and ($_process.ExitCode -or $ShowLogs)) {
                 Start-Process $logFile
             }
 
-            $i++
             Write-Host
         }
     }
     
     End {
         if ($PSCmdlet.ParameterSetName -eq 'BuildAJob') {
-            foreach ($filename in $filenameS) {
-                Write-Verbose "Removing job file: $filename"
+            foreach ($filename in $jobFileNameS) {
+                Write-Verbose "Removing temp job file: $filename"
                 try {
                     Remove-Item (Join-Path $env:TEMP $filename) -ErrorAction Stop -WhatIf:$false
                 }
